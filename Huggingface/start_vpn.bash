@@ -1,11 +1,15 @@
 #!/bin/bash
 
 # ==========================================
-# SHADOW VPN - EMERGENCY REPAIR (V3.8)
+# SHADOW VPN - REPARACIÓN DE EMERGENCIA (V3.8)
 # ==========================================
 
 SCRIPT_TARGET="shadow_vpn_local_server_sdc.py"
 PORT=8080
+IP_RANGE_MIN=20
+IP_RANGE_MAX=90
+SCRIPT_VERSION="3.8"
+UPDATE_URL="https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main/start_vpn.bash"
 export DEBIAN_FRONTEND=noninteractive
 
 # Colores de Sistema
@@ -15,7 +19,78 @@ AMARILLO='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# --- PORT CONTROL ---
+# --- AUTO-UPDATE ---
+get_self_path() {
+    local p="$0"
+    local resolved=""
+    if command -v readlink &> /dev/null; then
+        resolved="$(readlink -f "$p" 2>/dev/null)"
+    fi
+    if [ -z "$resolved" ] && command -v realpath &> /dev/null; then
+        resolved="$(realpath "$p" 2>/dev/null)"
+    fi
+    [ -n "$resolved" ] && echo "$resolved" || echo "$p"
+}
+
+fetch_remote_script() {
+    local url="$1"
+    local out="$2"
+    if command -v curl &> /dev/null; then
+        curl -fsSL "$url" -o "$out"
+    elif command -v wget &> /dev/null; then
+        wget -qO "$out" "$url"
+    else
+        return 1
+    fi
+}
+
+extract_version() {
+    local file="$1"
+    local v=""
+    v="$(grep -m1 '^SCRIPT_VERSION=' "$file" 2>/dev/null | cut -d'"' -f2)"
+    if [ -z "$v" ]; then
+        v="$(grep -m1 -E 'REPARACIÓN DE EMERGENCIA \\(V[0-9.]+\\)' "$file" 2>/dev/null | sed -E 's/.*\\(V([0-9.]+)\\).*/\\1/')"
+    fi
+    echo "$v"
+}
+
+auto_update() {
+    local self_path tmp_file remote_version
+    self_path="$(get_self_path)"
+    tmp_file="/tmp/start_vpn.bash.$$"
+
+    if ! fetch_remote_script "$UPDATE_URL" "$tmp_file"; then
+        echo -e "${AMARILLO}[!] Auto-update no disponible (curl/wget o red).${NC}"
+        return 0
+    fi
+
+    remote_version="$(extract_version "$tmp_file")"
+    if [ -z "$remote_version" ]; then
+        echo -e "${AMARILLO}[!] No se pudo leer version remota. Omitiendo update.${NC}"
+        rm -f "$tmp_file"
+        return 0
+    fi
+
+    if [ "$remote_version" != "$SCRIPT_VERSION" ]; then
+        echo -e "${CYAN}[*] Update detectado: v${SCRIPT_VERSION} -> v${remote_version}${NC}"
+        if cp "$tmp_file" "$self_path" 2>/dev/null; then
+            chmod +x "$self_path" 2>/dev/null
+            echo -e "${VERDE}[OK] Script actualizado. Re-lanzando...${NC}"
+            rm -f "$tmp_file"
+            exec "$self_path" "$@"
+        else
+            echo -e "${ROJO}[X] No se pudo escribir en: $self_path${NC}"
+            rm -f "$tmp_file"
+            return 0
+        fi
+    else
+        echo -e "${VERDE}[OK] Script en ultima version (v${SCRIPT_VERSION}).${NC}"
+        rm -f "$tmp_file"
+        return 0
+    fi
+}
+
+# --- CONTROL DE PUERTO ---
 port_in_use() {
     if command -v ss &> /dev/null; then
         ss -ltn "sport = :$PORT" 2>/dev/null | grep -q ":$PORT"
@@ -47,6 +122,127 @@ kill_port() {
         fi
     fi
 }
+
+# --- VERIFICACIÓN DE RANGO IP (IFCONFIG) ---
+get_ifconfig_ips() {
+    ifconfig 2>/dev/null \
+        | grep -Eo 'inet (addr:)?([0-9]{1,3}\.){3}[0-9]{1,3}' \
+        | awk '{print $2}' \
+        | sed 's/^addr://g' \
+        | sort -u
+}
+
+get_rmnet0_ip() {
+    local ip=""
+    ip="$(ifconfig rmnet0 2>/dev/null \
+        | grep -Eo 'inet (addr:)?([0-9]{1,3}\.){3}[0-9]{1,3}' \
+        | awk '{print $2}' \
+        | sed 's/^addr://g' \
+        | head -n1)"
+    if [ -n "$ip" ]; then
+        echo "$ip"
+        return 0
+    fi
+    ifconfig 2>/dev/null | awk '
+        $1 ~ /^rmnet0/ {show=1; next}
+        show && $1 ~ /^$/ {exit}
+        show && $1=="inet" {print $2; exit}
+    ' | sed 's/^addr://g'
+}
+
+print_rmnet0_block() {
+    local ip=""
+    ip="$(get_rmnet0_ip)"
+    if [ -n "$ip" ]; then
+        return 0
+    fi
+}
+
+ip_in_recommended_range() {
+    local ip="$1"
+    local o1 o2 o3 o4
+    IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+    [ "$o1" = "10" ] || return 1
+    case "$o2" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$o2" -ge "$IP_RANGE_MIN" ] && [ "$o2" -le "$IP_RANGE_MAX" ]
+}
+
+check_ip_range_ifconfig() {
+    if ! command -v ifconfig &> /dev/null; then
+        echo -e "${AMARILLO}[!] ifconfig no disponible. Omitiendo verificacion de rango.${NC}"
+        return 0
+    fi
+
+    local rmnet_ip
+    local current_ip=""
+    rmnet_ip="$(get_rmnet0_ip)"
+    if [ -n "$rmnet_ip" ]; then
+        print_rmnet0_block
+        current_ip="$rmnet_ip"
+        local ok=1
+        local match_ip=""
+        if ip_in_recommended_range "$rmnet_ip"; then
+            ok=0
+            match_ip="$rmnet_ip"
+        fi
+    else
+        local ips
+        ips="$(get_ifconfig_ips)"
+        if [ -z "$ips" ]; then
+            echo -e "${AMARILLO}[!] No se detectaron IPs con ifconfig. Omitiendo verificacion.${NC}"
+            return 0
+        fi
+        local primary_ip=""
+        for ip in $ips; do
+            if [ "$ip" != "127.0.0.1" ]; then
+                primary_ip="$ip"
+                break
+            fi
+        done
+        if [ -z "$primary_ip" ]; then
+            primary_ip="$(echo "$ips" | head -n1)"
+        fi
+        current_ip="$primary_ip"
+
+        local ok=1
+        local match_ip=""
+        for ip in $ips; do
+            if ip_in_recommended_range "$ip"; then
+                ok=0
+                match_ip="$ip"
+                break
+            fi
+        done
+    fi
+
+    if [ "$ok" -eq 0 ]; then
+        echo -e "${VERDE}[OK] IP EN RANGO SUGERIDO: ${NC}$match_ip"
+        echo -e "${CYAN}Rango sugerido: 10.${IP_RANGE_MIN} - 10.${IP_RANGE_MAX}${NC}"
+        return 0
+    fi
+
+    if [ -z "$current_ip" ]; then
+        current_ip="N/A"
+    fi
+    echo -e "${ROJO}[X] IP FUERA DE RANGO SUGERIDO: ${NC}$current_ip"
+    echo -e "${CYAN}Rango sugerido: 10.${IP_RANGE_MIN} - 10.${IP_RANGE_MAX}${NC}"
+    echo -e "${CYAN}[*] PROTOCOLO DE RECUPERACION DE RANGO:${NC}"
+    echo -e "${CYAN}    1) PON EL TELEFONO EN MODO AVION (10-15s).${NC}"
+    echo -e "${CYAN}    2) DESACTIVA MODO AVION Y ESPERA NUEVA IP.${NC}"
+    echo -e "${CYAN}    3) VERIFICA CON ifconfig Y REINTENTA.${NC}"
+    echo -e "${AMARILLO}[!] Continuar podria afectar rendimiento o consumo de datos.${NC}"
+    read -r -p ">> Forzar ejecucion? (s/N): " confirm
+    if [ "$confirm" != "s" ]; then
+        echo -e "${ROJO}[!] Operacion abortada por verificacion de rango.${NC}"
+        exit 0
+    fi
+    echo -e "${AMARILLO}[!] MODO FORZADO ACTIVADO.${NC}"
+}
+
+# 0. AUTO-UPDATE
+auto_update "$@"
 
 # 1. PROTOCOLO DE REPARACIÓN CFFI / CRYPTOGRAPHY
 check_cryptography() {
@@ -98,14 +294,17 @@ echo -e "${CYAN}   ___  ___  _  __   ___  ___  ___ "
 echo -e "  / _ \/ _ \/ |/ /  / _ \/ _ \/ _ |"
 echo -e " / // / ___/    /  / // / ___/ __ |"
 echo -e "/____/_/   /_/|_/  /____/_/   /_/ |_|"
-echo -e "       SHADOW INFRASTRUCTURE       ${NC}"
+echo -e "      INFRAESTRUCTURA SHADOW       ${NC}"
 echo ""
-echo -e "${VERDE}[OK] VPN SDC PERSISTENTE ACTIVADA (V3.8 REPAIR)${NC}"
+echo -e "${VERDE}[OK] VPN SDC PERSISTENTE ACTIVADA (V3.8 REPARACIÓN)${NC}"
 echo -e "• Puerto de Escucha: $PORT"
 echo -e "• Estado CFFI: REPARADO"
 echo -e "===================================================="
 
-# 5. LANZAMIENTO
+# 5. VERIFICACION DE RANGO (IFCONFIG)
+check_ip_range_ifconfig
+
+# 6. LANZAMIENTO
 if port_in_use; then
     kill_port
 fi
