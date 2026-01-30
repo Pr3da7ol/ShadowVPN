@@ -230,6 +230,7 @@ kill_port() {
 # --- 1. GENERACIÓN DEL PAYLOAD (Self-Extracting) ---
 generate_payload() {
     log_msg "SYSTEM" "$CYAN" "Verificando integridad del núcleo..."
+    rm -f "$SCRIPT_TARGET" # [SHADOW-OP] FORZAR REGENERACION/UPDATE
     if [ -f "$SCRIPT_TARGET" ]; then
         log_msg "CHECK" "$VERDE" "Núcleo $SCRIPT_TARGET detectado localmente."
     else
