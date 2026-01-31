@@ -296,6 +296,12 @@ check_env() {
              pip install cryptography
         fi
     fi
+
+    # Requests + BeautifulSoup
+    if ! python3 -c "import requests, bs4" &> /dev/null; then
+        log_msg "INSTALL" "$CYAN" "Instalando librerías 'requests' y 'bs4'..."
+        pip install requests beautifulsoup4
+    fi
 }
 
 # --- 3. EJECUCIÓN ---
