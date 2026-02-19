@@ -10,6 +10,8 @@ IP_RANGE_MIN=20
 IP_RANGE_MAX=90
 SCRIPT_VERSION="3.9"
 UPDATE_URL="https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main/start_vpn.bash"
+AUTO_UPDATE_ENABLED="${AUTO_UPDATE_ENABLED:-0}"
+FORCE_CORE_REGEN="${FORCE_CORE_REGEN:-0}"
 export DEBIAN_FRONTEND=noninteractive
 
 # Colores
@@ -95,6 +97,10 @@ auto_update() {
 }
 
 refresh_core_payload() {
+    if [ "$FORCE_CORE_REGEN" != "1" ]; then
+        log_msg "SYNC" "$CYAN" "Conservando $SCRIPT_TARGET (FORCE_CORE_REGEN=0)."
+        return 0
+    fi
     if [ -f "$SCRIPT_TARGET" ]; then
         log_msg "SYNC" "$CYAN" "Eliminando $SCRIPT_TARGET para forzar descarga/reconstruccion..."
         if ! rm -f "$SCRIPT_TARGET"; then
@@ -241,6 +247,12 @@ kill_port() {
 # --- 1. GENERACIÓN DEL PAYLOAD (Self-Extracting) ---
 generate_payload() {
     log_msg "SYSTEM" "$CYAN" "Verificando integridad del núcleo..."
+
+    if [ -f "$SCRIPT_TARGET" ] && [ "$FORCE_CORE_REGEN" != "1" ]; then
+        log_msg "GEN" "$VERDE" "Núcleo local detectado. Se reutiliza $SCRIPT_TARGET."
+        return 0
+    fi
+
     log_msg "GEN" "$AMARILLO" "Regenerando $SCRIPT_TARGET desde payload embebido (ULTRA SECURE)..."
 
     # INICIO DEL BLOQUE PYTHON PROTEGIDO V2
@@ -293,7 +305,11 @@ check_env() {
 }
 
 # --- 3. EJECUCIÓN ---
-auto_update "$@"
+if [ "$AUTO_UPDATE_ENABLED" = "1" ]; then
+    auto_update "$@"
+else
+    log_msg "SYNC" "$CYAN" "Auto-update desactivado (AUTO_UPDATE_ENABLED=0)."
+fi
 refresh_core_payload
 clear
 echo -e "${CYAN}   ___  ___  _  __   ___  ___  ___ ${NC}"
