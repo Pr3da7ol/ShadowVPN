@@ -9,6 +9,7 @@ INSTALL_DIR="${HOME_DIR}/${PACKAGE_NAME}"
 REPO_RAW_BASE="${SHADOW_VPN_RAW_BASE:-https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main}"
 ZIP_URL="${SHADOW_VPN_ZIP_URL:-${REPO_RAW_BASE}/${ZIP_NAME}}"
 FORCE_UPDATE="${SHADOW_VPN_FORCE_UPDATE:-0}"
+FOLLOW_LOGS="${SHADOW_VPN_FOLLOW_LOGS:-1}"
 
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
@@ -73,6 +74,12 @@ main() {
       echo "Interfaz web disponible en: http://localhost:8080/"
       echo "Estado del sistema: http://localhost:8080/status"
       echo "Estado de cookies: http://localhost:8080/cookies/status"
+      
+      if [[ "$FOLLOW_LOGS" == "1" ]]; then
+        echo ""
+        print_msg "INFO" "$COLOR_YELLOW" "Mostrando logs (Ctrl+C para salir)..."
+        exec "$INSTALL_DIR/shadow_vpn_ctl.sh" logs
+      fi
       exit 0
     fi
   fi
@@ -84,6 +91,12 @@ main() {
     echo "Interfaz web disponible en: http://localhost:8080/"
     echo "Estado del sistema: http://localhost:8080/status"
     echo "Estado de cookies: http://localhost:8080/cookies/status"
+    
+    if [[ "$FOLLOW_LOGS" == "1" ]]; then
+      echo ""
+      print_msg "INFO" "$COLOR_YELLOW" "Mostrando logs (Ctrl+C para salir)..."
+      exec "$INSTALL_DIR/shadow_vpn_ctl.sh" logs
+    fi
     exit 0
   fi
 
@@ -93,6 +106,12 @@ main() {
   echo "Interfaz web disponible en: http://localhost:8080/"
   echo "Estado del sistema: http://localhost:8080/status"
   echo "Estado de cookies: http://localhost:8080/cookies/status"
+  
+  if [[ "$FOLLOW_LOGS" == "1" ]]; then
+    echo ""
+    print_msg "INFO" "$COLOR_YELLOW" "Mostrando logs (Ctrl+C para salir)..."
+    exec "$INSTALL_DIR/shadow_vpn_ctl.sh" logs
+  fi
 }
 
 main "$@"
