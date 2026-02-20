@@ -80,6 +80,55 @@ show_endpoints() {
   echo ""
 }
 
+filter_logs() {
+  local skip_traceback=0
+  tail -f "$INSTALL_DIR/shadow_vpn.log" 2>/dev/null | while IFS= read -r line; do
+    # Detectar inicio de traceback
+    if [[ "$line" == *"Traceback"* ]]; then
+      skip_traceback=1
+      continue
+    fi
+    
+    # Detectar fin de traceback (línea que empieza con palabra sin espacios)
+    if [[ $skip_traceback -eq 1 ]]; then
+      if [[ "$line" =~ ^[A-Z] ]] || [[ "$line" == *"["*"]"* ]]; then
+        skip_traceback=0
+      else
+        continue
+      fi
+    fi
+    
+    # Filtrar líneas de ruido
+    case "$line" in
+      *"OSError"*|*"File \""*|*"in <module>"*|*"in main"*|*"self."*|*"socketserver"*|*"Address already in use"*)
+        continue 
+        ;;
+      *"[ERROR]"*)
+        # Solo mostrar errores importantes, no los técnicos
+        [[ "$line" != *"salió con rc=1"* ]] && echo -e "${COLOR_DIM}⚠ ${line#*] }${COLOR_RESET}"
+        ;;
+      *"[OK]"*)
+        echo -e "${COLOR_GREEN}✓${COLOR_RESET} ${line#*] }"
+        ;;
+      *"[START]"*)
+        # Mostrar solo el componente, no toda la ruta
+        local component="${line#*] }"
+        component="${component%%:*}"
+        echo -e "${COLOR_DIM}→ ${component}${COLOR_RESET}"
+        ;;
+      *"[STOP]"*|*"[BOOT]"*|*"profiles"*|*"refreshed"*|*"[INFO] cookies source"*|*"[INFO] Presiona Ctrl+C"*)
+        continue
+        ;;
+      *"[INFO]"*)
+        echo -e "${COLOR_BLUE}ℹ${COLOR_RESET} ${line#*] }"
+        ;;
+      *)
+        # Ocultar otras líneas técnicas
+        ;;
+    esac
+  done
+}
+
 main() {
   print_header
   echo ""
@@ -93,7 +142,7 @@ main() {
       if [[ "$FOLLOW_LOGS" == "1" ]]; then
         echo -e "${COLOR_DIM}Presiona Ctrl+C para salir${COLOR_RESET}"
         echo ""
-        exec tail -f "$INSTALL_DIR/shadow_vpn.log" 2>/dev/null
+        filter_logs
       fi
       exit 0
     fi
@@ -109,7 +158,7 @@ main() {
     if [[ "$FOLLOW_LOGS" == "1" ]]; then
       echo -e "${COLOR_DIM}Presiona Ctrl+C para salir${COLOR_RESET}"
       echo ""
-      exec tail -f "$INSTALL_DIR/shadow_vpn.log" 2>/dev/null
+      filter_logs
     fi
     exit 0
   fi
@@ -124,7 +173,7 @@ main() {
   if [[ "$FOLLOW_LOGS" == "1" ]]; then
     echo -e "${COLOR_DIM}Presiona Ctrl+C para salir${COLOR_RESET}"
     echo ""
-    exec tail -f "$INSTALL_DIR/shadow_vpn.log" 2>/dev/null
+    filter_logs
   fi
 }
 
