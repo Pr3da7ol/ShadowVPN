@@ -52,7 +52,7 @@ download_and_install() {
     fi
     
     print_info "Descomprimiendo..."
-    if ! unzip -q "$BOT_ZIP"; then
+    if ! unzip -o -q "$BOT_ZIP"; then
         echo "[ERROR] Descompresión fallida"
         exit 1
     fi
