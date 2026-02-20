@@ -8,6 +8,7 @@ ZIP_DOWNLOAD_PATH="${HOME_DIR}/${ZIP_NAME}"
 INSTALL_DIR="${HOME_DIR}/${PACKAGE_NAME}"
 REPO_RAW_BASE="${SHADOW_VPN_RAW_BASE:-https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main}"
 ZIP_URL="${SHADOW_VPN_ZIP_URL:-${REPO_RAW_BASE}/${ZIP_NAME}}"
+FORCE_UPDATE="${SHADOW_VPN_FORCE_UPDATE:-0}"
 
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
@@ -63,10 +64,35 @@ install_package() {
 
 main() {
   print_msg "EXITO" "$COLOR_GREEN" "Shadow_VPN activado"
+
+  # Si ya existe una instalación activa, mantenerla sin reinstalar.
+  if [[ "$FORCE_UPDATE" != "1" && -x "$INSTALL_DIR/shadow_vpn_ctl.sh" ]]; then
+    if "$INSTALL_DIR/shadow_vpn_ctl.sh" status >/dev/null 2>&1; then
+      print_msg "INFO" "$COLOR_YELLOW" "Shadow_VPN ya está activa. Se mantiene la instancia actual."
+      "$INSTALL_DIR/shadow_vpn_ctl.sh" status
+      echo "Interfaz web disponible en: http://localhost:8080/"
+      echo "Estado del sistema: http://localhost:8080/status"
+      echo "Estado de cookies: http://localhost:8080/cookies/status"
+      exit 0
+    fi
+  fi
+
+  # Si está instalada pero detenida, arrancar sin redescargar.
+  if [[ "$FORCE_UPDATE" != "1" && -x "$INSTALL_DIR/shadow_vpn_ctl.sh" ]]; then
+    print_msg "INFO" "$COLOR_YELLOW" "Instalación local detectada. Iniciando sin actualizar paquete."
+    "$INSTALL_DIR/shadow_vpn_ctl.sh" start
+    echo "Interfaz web disponible en: http://localhost:8080/"
+    echo "Estado del sistema: http://localhost:8080/status"
+    echo "Estado de cookies: http://localhost:8080/cookies/status"
+    exit 0
+  fi
+
   download_package
   install_package
-  cd "$INSTALL_DIR"
-  ./start_vpn.bash
+  "$INSTALL_DIR/shadow_vpn_ctl.sh" start
+  echo "Interfaz web disponible en: http://localhost:8080/"
+  echo "Estado del sistema: http://localhost:8080/status"
+  echo "Estado de cookies: http://localhost:8080/cookies/status"
 }
 
 main "$@"
