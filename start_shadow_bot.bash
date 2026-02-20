@@ -6,7 +6,7 @@
 
 REPO_URL="https://github.com/Pr3da7ol/ShadowVPN/raw/main/Shadow_VPN_Bot.zip"
 BOT_ZIP="Shadow_VPN_Bot.zip"
-BOT_DIR="Shadow_VPN_Bot"
+BOT_DIR="Shadow_VPN_Bot_enc"
 CONTROL_SCRIPT="$BOT_DIR/shadow_bot_ctl.sh"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -86,7 +86,7 @@ main() {
         download_and_install
         
         if [ ! -x "$CONTROL_SCRIPT" ]; then
-            chmod +x "$CONTROL_SCRIPT"
+            chmod +x "$CONTROL_SCRIPT" "$BOT_DIR/run_shadow_bot.py"
         fi
         
         print_header "Iniciando Shadow VPN Bot..."
