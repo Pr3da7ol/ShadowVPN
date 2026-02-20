@@ -11,43 +11,51 @@ ZIP_URL="${SHADOW_VPN_ZIP_URL:-${REPO_RAW_BASE}/${ZIP_NAME}}"
 FORCE_UPDATE="${SHADOW_VPN_FORCE_UPDATE:-0}"
 FOLLOW_LOGS="${SHADOW_VPN_FOLLOW_LOGS:-1}"
 
-COLOR_RED='\033[0;31m'
+COLOR_BLUE='\033[0;34m'
+COLOR_CYAN='\033[0;36m'
 COLOR_GREEN='\033[0;32m'
-COLOR_YELLOW='\033[0;33m'
+COLOR_DIM='\033[2m'
 COLOR_RESET='\033[0m'
 
-print_msg() {
-  local level="$1"
-  local color="$2"
-  local text="$3"
-  echo -e "${color}[${level}] ${text}${COLOR_RESET}"
+print_header() {
+  echo -e "${COLOR_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
+  echo -e "${COLOR_CYAN}  Shadow VPN${COLOR_RESET} ${COLOR_DIM}v1.1${COLOR_RESET}"
+  echo -e "${COLOR_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
+}
+
+print_status() {
+  echo -e "${COLOR_GREEN}✓${COLOR_RESET} $1"
+}
+
+print_info() {
+  echo -e "${COLOR_BLUE}ℹ${COLOR_RESET} $1"
 }
 
 download_package() {
-  print_msg "INFO" "$COLOR_YELLOW" "Descargando paquete Shadow_VPN desde GitHub..."
-  print_msg "INFO" "$COLOR_YELLOW" "URL: $ZIP_URL"
+  print_info "Descargando paquete..."
 
   if command -v curl >/dev/null 2>&1; then
-    if ! curl -fL "$ZIP_URL" -o "$ZIP_DOWNLOAD_PATH"; then
-      print_msg "ERROR" "$COLOR_RED" "No se pudo descargar $ZIP_URL"
+    if ! curl -fL "$ZIP_URL" -o "$ZIP_DOWNLOAD_PATH" 2>/dev/null; then
+      echo -e "${COLOR_DIM}Error: No se pudo descargar el paquete${COLOR_RESET}"
       exit 1
     fi
   elif command -v wget >/dev/null 2>&1; then
-    if ! wget -O "$ZIP_DOWNLOAD_PATH" "$ZIP_URL"; then
-      print_msg "ERROR" "$COLOR_RED" "No se pudo descargar $ZIP_URL"
+    if ! wget -q -O "$ZIP_DOWNLOAD_PATH" "$ZIP_URL"; then
+      echo -e "${COLOR_DIM}Error: No se pudo descargar el paquete${COLOR_RESET}"
       exit 1
     fi
   else
-    print_msg "ERROR" "$COLOR_RED" "No hay curl ni wget para descargar."
+    echo -e "${COLOR_DIM}Error: No hay curl ni wget disponible${COLOR_RESET}"
     exit 1
   fi
+  print_status "Paquete descargado"
 }
 
 install_package() {
-  print_msg "INFO" "$COLOR_YELLOW" "Instalando Shadow_VPN..."
+  print_info "Instalando..."
   rm -rf "$INSTALL_DIR"
   mkdir -p "$INSTALL_DIR"
-  unzip -o "$ZIP_DOWNLOAD_PATH" -d "$INSTALL_DIR" >/dev/null
+  unzip -qq "$ZIP_DOWNLOAD_PATH" -d "$INSTALL_DIR"
 
   # Soporta zip plano o zip con carpeta raíz Shadow_VPN/
   if [[ ! -f "$INSTALL_DIR/start_vpn.bash" && -d "$INSTALL_DIR/Shadow_VPN" ]]; then
@@ -56,29 +64,36 @@ install_package() {
   fi
 
   if [[ ! -f "$INSTALL_DIR/start_vpn.bash" ]]; then
-    print_msg "ERROR" "$COLOR_RED" "ZIP invalido: no contiene start_vpn.bash"
+    echo -e "${COLOR_DIM}Error: Paquete inválido${COLOR_RESET}"
     exit 1
   fi
 
-  chmod +x "$INSTALL_DIR/start_vpn.bash" "$INSTALL_DIR/shadow_vpn_ctl.sh" "$INSTALL_DIR/run_shadow_secure.py"
+  chmod +x "$INSTALL_DIR/start_vpn.bash" "$INSTALL_DIR/shadow_vpn_ctl.sh" "$INSTALL_DIR/run_shadow_secure.py" 2>/dev/null
+  print_status "Instalación completa"
+}
+
+show_endpoints() {
+  echo ""
+  echo -e "${COLOR_DIM}Web Interface:${COLOR_RESET} http://localhost:8080"
+  echo -e "${COLOR_DIM}System Status:${COLOR_RESET} http://localhost:8080/status"
+  echo -e "${COLOR_DIM}Cookies:${COLOR_RESET}      http://localhost:8080/cookies/status"
+  echo ""
 }
 
 main() {
-  print_msg "EXITO" "$COLOR_GREEN" "Shadow_VPN activado"
+  print_header
+  echo ""
 
   # Si ya existe una instalación activa, mantenerla sin reinstalar.
   if [[ "$FORCE_UPDATE" != "1" && -x "$INSTALL_DIR/shadow_vpn_ctl.sh" ]]; then
     if "$INSTALL_DIR/shadow_vpn_ctl.sh" status >/dev/null 2>&1; then
-      print_msg "INFO" "$COLOR_YELLOW" "Shadow_VPN ya está activa. Se mantiene la instancia actual."
-      "$INSTALL_DIR/shadow_vpn_ctl.sh" status
-      echo "Interfaz web disponible en: http://localhost:8080/"
-      echo "Estado del sistema: http://localhost:8080/status"
-      echo "Estado de cookies: http://localhost:8080/cookies/status"
+      print_status "Servicio activo"
+      show_endpoints
       
       if [[ "$FOLLOW_LOGS" == "1" ]]; then
+        echo -e "${COLOR_DIM}Presiona Ctrl+C para salir${COLOR_RESET}"
         echo ""
-        print_msg "INFO" "$COLOR_YELLOW" "Mostrando logs (Ctrl+C para salir)..."
-        exec "$INSTALL_DIR/shadow_vpn_ctl.sh" logs
+        exec tail -f "$INSTALL_DIR/shadow_vpn.log" 2>/dev/null
       fi
       exit 0
     fi
@@ -86,31 +101,30 @@ main() {
 
   # Si está instalada pero detenida, arrancar sin redescargar.
   if [[ "$FORCE_UPDATE" != "1" && -x "$INSTALL_DIR/shadow_vpn_ctl.sh" ]]; then
-    print_msg "INFO" "$COLOR_YELLOW" "Instalación local detectada. Iniciando sin actualizar paquete."
-    "$INSTALL_DIR/shadow_vpn_ctl.sh" start
-    echo "Interfaz web disponible en: http://localhost:8080/"
-    echo "Estado del sistema: http://localhost:8080/status"
-    echo "Estado de cookies: http://localhost:8080/cookies/status"
+    print_info "Iniciando servicio..."
+    "$INSTALL_DIR/shadow_vpn_ctl.sh" start >/dev/null 2>&1
+    print_status "Servicio iniciado"
+    show_endpoints
     
     if [[ "$FOLLOW_LOGS" == "1" ]]; then
+      echo -e "${COLOR_DIM}Presiona Ctrl+C para salir${COLOR_RESET}"
       echo ""
-      print_msg "INFO" "$COLOR_YELLOW" "Mostrando logs (Ctrl+C para salir)..."
-      exec "$INSTALL_DIR/shadow_vpn_ctl.sh" logs
+      exec tail -f "$INSTALL_DIR/shadow_vpn.log" 2>/dev/null
     fi
     exit 0
   fi
 
   download_package
   install_package
-  "$INSTALL_DIR/shadow_vpn_ctl.sh" start
-  echo "Interfaz web disponible en: http://localhost:8080/"
-  echo "Estado del sistema: http://localhost:8080/status"
-  echo "Estado de cookies: http://localhost:8080/cookies/status"
+  print_info "Iniciando servicio..."
+  "$INSTALL_DIR/shadow_vpn_ctl.sh" start >/dev/null 2>&1
+  print_status "Servicio iniciado"
+  show_endpoints
   
   if [[ "$FOLLOW_LOGS" == "1" ]]; then
+    echo -e "${COLOR_DIM}Presiona Ctrl+C para salir${COLOR_RESET}"
     echo ""
-    print_msg "INFO" "$COLOR_YELLOW" "Mostrando logs (Ctrl+C para salir)..."
-    exec "$INSTALL_DIR/shadow_vpn_ctl.sh" logs
+    exec tail -f "$INSTALL_DIR/shadow_vpn.log" 2>/dev/null
   fi
 }
 
