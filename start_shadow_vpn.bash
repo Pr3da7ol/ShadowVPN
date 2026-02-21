@@ -32,12 +32,17 @@ fi
 imprimir_mensaje "INFO" "$AMARILLO" "Actualizando Shadow_VPN..."
 rm -rf "$CARPETA_VPN" "$NOMBRE_ZIP"
 
-if wget -O "$NOMBRE_ZIP" "$ZIP_URL"; then
+if wget --tries=3 --timeout=15 -4 -O "$NOMBRE_ZIP" "$ZIP_URL"; then
     imprimir_mensaje "INFO" "$AMARILLO" "Descarga completada."
 else
-    imprimir_mensaje "ERROR" "$ROJO" "Error al descargar Shadow_VPN.zip. Verifica tu conexión."
-    rm -f "$NOMBRE_ZIP"
-    exit 1
+    imprimir_mensaje "ERROR" "$ROJO" "Wget falló. Intentando con Curl..."
+    if curl -L -4 -o "$NOMBRE_ZIP" "$ZIP_URL"; then
+         imprimir_mensaje "INFO" "$AMARILLO" "Descarga completada con Curl."
+    else
+         imprimir_mensaje "ERROR" "$ROJO" "Error al descargar Shadow_VPN.zip. Verifica tu conexión."
+         rm -f "$NOMBRE_ZIP"
+         exit 1
+    fi
 fi
 
 imprimir_mensaje "INFO" "$AMARILLO" "Descomprimiendo..."
