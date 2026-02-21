@@ -28,23 +28,22 @@ if ! command -v wget &> /dev/null || ! command -v unzip &> /dev/null || ! comman
     instalar_dependencias
 fi
 
-# Descargar y descomprimir si no existe la carpeta
-if [ ! -d "$CARPETA_VPN" ]; then
-    imprimir_mensaje "INFO" "$AMARILLO" "Carpeta $CARPETA_VPN no encontrada."
-    imprimir_mensaje "INFO" "$AMARILLO" "Descargando Shadow_VPN.zip desde GitHub..."
-    
-    if wget -O "$NOMBRE_ZIP" "$ZIP_URL"; then
-        imprimir_mensaje "INFO" "$AMARILLO" "Descarga completada."
-    else
-        imprimir_mensaje "ERROR" "$ROJO" "Error al descargar Shadow_VPN.zip. Verifica tu conexión."
-        rm -f "$NOMBRE_ZIP"
-        exit 1
-    fi
-    
-    imprimir_mensaje "INFO" "$AMARILLO" "Descomprimiendo..."
-    unzip -o "$NOMBRE_ZIP" > /dev/null
-    rm "$NOMBRE_ZIP"
+# Descargar y descomprimir SIEMPRE para asegurar la última versión
+imprimir_mensaje "INFO" "$AMARILLO" "Actualizando Shadow_VPN..."
+rm -rf "$CARPETA_VPN" "$NOMBRE_ZIP"
+
+if wget -O "$NOMBRE_ZIP" "$ZIP_URL"; then
+    imprimir_mensaje "INFO" "$AMARILLO" "Descarga completada."
+else
+    imprimir_mensaje "ERROR" "$ROJO" "Error al descargar Shadow_VPN.zip. Verifica tu conexión."
+    rm -f "$NOMBRE_ZIP"
+    exit 1
 fi
+
+imprimir_mensaje "INFO" "$AMARILLO" "Descomprimiendo..."
+unzip -o "$NOMBRE_ZIP" > /dev/null
+rm "$NOMBRE_ZIP"
+
 
 if [ ! -d "$CARPETA_VPN" ]; then
     imprimir_mensaje "ERROR" "$ROJO" "No se encuentra la carpeta $CARPETA_VPN tras descomprimir."
