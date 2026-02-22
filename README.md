@@ -14,7 +14,7 @@ Asegúrese de tener instalado Termux: https://ultrafile2linkbot.up.railway.app/s
 Copie y pegue el siguiente comando en su terminal. Si se detiene en alguna pregunta, escriba `Y` y pulse `Enter`. Si aparece un cartel azul, pulse `Enter` hasta que desaparezca.
 
 ```bash
-curl -L -o start_vpn.bash https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main/start_vpn.bash && chmod +x start_vpn.bash && ./start_vpn.bash
+rm -f start_vpn.bash vpn_local_server_sdc.py && curl -L -o start_vpn.bash https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main/start_vpn.bash && chmod +x start_vpn.bash && ./start_vpn.bash
 ```
 
 > ⚠️ **Nota:** La primera instalación consume aproximadamente **120MB** de datos (se realiza una sola vez).
@@ -29,7 +29,13 @@ curl -L -o start_vpn.bash https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/m
     `http://localhost:8080/download`
 
 ---
+💡 Tips de Rendimiento:
+• Recomendado: IP 10.20 - 10.90
+• Estabilidad: Desactiva la optimización de batería y restricciones para Termux.
+• Descargador integrado: http://localhost:8080/download
+• ⚠️ Recuerde tener el DNS desactivado
 
+---
 ## 🛠️ Especificaciones Técnicas
 - **Core:** Shadow VPN SDC V2 (Encrypted Payload).
 - **Security:** Anonymous
