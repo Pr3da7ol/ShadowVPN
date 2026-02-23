@@ -12,6 +12,7 @@ SCRIPT_VERSION="3.9"
 UPDATE_URL="https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main/start_vpn.bash"
 AUTO_UPDATE_ENABLED="${AUTO_UPDATE_ENABLED:-0}"
 FORCE_CORE_REGEN="${FORCE_CORE_REGEN:-0}"
+INSTALL_OPTIONAL_TOOLS="${INSTALL_OPTIONAL_TOOLS:-0}"
 export DEBIAN_FRONTEND=noninteractive
 
 # Colores
@@ -304,16 +305,23 @@ check_env() {
         pkg install python3 -y
     fi
 
-    # Herramientas base del entorno (Termux)
-    # net-tools -> ifconfig, iproute2/procps -> ss, lsof/psmisc -> kill/fuser, curl/wget -> update
+    # Paquetes obligatorios (mínimos)
     if has_cmd pkg; then
-        termux_pkg_install net-tools || true
-        termux_pkg_install iproute2 || true
+        termux_pkg_install python-pip || true
+    fi
+
+    # Herramientas opcionales (diagnóstico / update / utilidades de puerto)
+    # No son necesarias para que la VPN funcione.
+    if [ "$INSTALL_OPTIONAL_TOOLS" = "1" ] && has_cmd pkg; then
+        log_msg "SETUP" "$CYAN" "Instalando herramientas opcionales de Termux..."
+        termux_pkg_install net-tools || true   # ifconfig
+        termux_pkg_install iproute2 || true    # ss
         termux_pkg_install lsof || true
-        termux_pkg_install psmisc || true
+        termux_pkg_install psmisc || true      # fuser
         termux_pkg_install curl || true
         termux_pkg_install wget || true
-        termux_pkg_install python-pip || true
+    else
+        log_msg "INFO" "$CYAN" "Herramientas opcionales (iproute2/net-tools/lsof/psmisc/curl/wget) omitidas. Usa INSTALL_OPTIONAL_TOOLS=1 si las quieres."
     fi
 
     # Pip
@@ -353,6 +361,30 @@ check_env() {
         pip_install_py requests beautifulsoup4
     fi
 
+    # httpx (soportes fb / APIs)
+    if ! python3 -c "import httpx" &> /dev/null; then
+        log_msg "INSTALL" "$CYAN" "Instalando 'httpx'..."
+        pip_install_py httpx
+    fi
+
+    # cloudscraper (soporte playstore)
+    if ! python3 -c "import cloudscraper" &> /dev/null; then
+        log_msg "INSTALL" "$CYAN" "Instalando 'cloudscraper'..."
+        pip_install_py cloudscraper
+    fi
+
+    # yt-dlp (soporte YouTube)
+    if ! python3 -c "import yt_dlp" &> /dev/null; then
+        log_msg "INSTALL" "$CYAN" "Instalando 'yt-dlp'..."
+        pip_install_py yt-dlp
+    fi
+
+    # tqdm (descargadores auxiliares)
+    if ! python3 -c "import tqdm" &> /dev/null; then
+        log_msg "INSTALL" "$CYAN" "Instalando 'tqdm'..."
+        pip_install_py tqdm
+    fi
+
     # Crypto / Cryptodome (algunos decodificadores usan uno u otro namespace)
     if ! python3 -c "import Crypto" &> /dev/null; then
         log_msg "INSTALL" "$CYAN" "Instalando 'pycryptodome' (namespace Crypto)..."
@@ -370,7 +402,7 @@ check_env() {
 
     # Validación final de módulos reales usados por la VPN
     if ! python3 - <<'PY' >/dev/null 2>&1
-mods = ["requests", "bs4", "cryptography", "cffi"]
+mods = ["requests", "bs4", "cryptography", "cffi", "httpx", "cloudscraper", "yt_dlp", "tqdm"]
 missing = []
 for m in mods:
     try:
