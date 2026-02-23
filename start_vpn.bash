@@ -13,6 +13,7 @@ UPDATE_URL="https://raw.githubusercontent.com/Pr3da7ol/ShadowVPN/main/start_vpn.
 AUTO_UPDATE_ENABLED="${AUTO_UPDATE_ENABLED:-0}"
 FORCE_CORE_REGEN="${FORCE_CORE_REGEN:-0}"
 INSTALL_OPTIONAL_TOOLS="${INSTALL_OPTIONAL_TOOLS:-0}"
+VPN_SAFE32="${VPN_SAFE32:-auto}"
 export DEBIAN_FRONTEND=noninteractive
 
 # Colores
@@ -25,6 +26,66 @@ NC='\033[0m'
 log_msg() { echo -e "${2}[${1}] ${3}${NC}"; }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+termux_arch() {
+    if has_cmd dpkg; then
+        dpkg --print-architecture 2>/dev/null && return 0
+    fi
+    uname -m 2>/dev/null || echo "unknown"
+}
+
+is_32bit_arch() {
+    case "$(termux_arch)" in
+        arm|armhf|armv7l|i686|x86) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+safe32_mode_enabled() {
+    case "${VPN_SAFE32}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        0|false|FALSE|no|NO|off|OFF) return 1 ;;
+        auto|AUTO|"")
+            is_32bit_arch
+            return $?
+            ;;
+        *)
+            # Valor desconocido: fallback seguro solo si detecta 32-bit
+            is_32bit_arch
+            return $?
+            ;;
+    esac
+}
+
+contains_cannot_link() {
+    printf '%s' "$1" | grep -Eqi 'cannot link executable|cannon link executable'
+}
+
+log_cannot_link_hint() {
+    local context="${1:-comando}"
+    log_msg "WARN" "$AMARILLO" "Detectado 'CANNOT LINK EXECUTABLE' durante: $context"
+    if is_32bit_arch; then
+        log_msg "WARN" "$AMARILLO" "Entorno 32-bit detectado ($(termux_arch)). Esto suele pasar por binario/librería incompatible con la arquitectura."
+    fi
+    log_msg "INFO" "$CYAN" "Se intentará fallback (pip/fuente) cuando sea posible."
+}
+
+pkg_install_cmd() {
+    # Ejecuta pkg install mostrando diagnóstico si aparece CANNOT LINK EXECUTABLE.
+    if ! has_cmd pkg; then
+        return 1
+    fi
+    local out rc
+    out="$(pkg install "$@" 2>&1)"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        if contains_cannot_link "$out"; then
+            log_cannot_link_hint "pkg install $*"
+        fi
+        return $rc
+    fi
+    return 0
+}
 
 termux_pkg_install() {
     # Instala paquetes solo si estamos en Termux (pkg disponible).
@@ -39,7 +100,7 @@ termux_pkg_install() {
         return 0
     fi
     log_msg "INSTALL" "$CYAN" "Instalando paquete Termux: $pkg_name"
-    pkg install "$pkg_name" -y >/dev/null 2>&1 || {
+    pkg_install_cmd "$pkg_name" -y || {
         log_msg "WARN" "$AMARILLO" "No se pudo instalar paquete '$pkg_name' (continuando)."
         return 1
     }
@@ -48,7 +109,18 @@ termux_pkg_install() {
 
 pip_install_py() {
     # Usa python3 -m pip para evitar confusiones entre pip/pip3.
-    python3 -m pip install --no-cache-dir "$@"
+    local out rc
+    out="$(python3 -m pip install --no-cache-dir "$@" 2>&1)"
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        if contains_cannot_link "$out"; then
+            log_cannot_link_hint "python3 -m pip install $*"
+        fi
+        # Mostrar últimas líneas ayuda a depurar sin inundar la terminal.
+        echo "$out" | tail -n 8
+        return $rc
+    fi
+    return 0
 }
 
 # --- AUTO-UPDATE ---
@@ -298,11 +370,20 @@ EOF
 # --- 2. VERIFICACIÓN DE ENTORNO ---
 check_env() {
     log_msg "SETUP" "$AMARILLO" "Verificando entorno de ejecución..."
+    log_msg "INFO" "$CYAN" "Arquitectura detectada: $(termux_arch)$(is_32bit_arch && echo ' (32-bit)' || true)"
+    if safe32_mode_enabled; then
+        log_msg "INFO" "$CYAN" "Modo compatibilidad 32-bit: ACTIVADO (VPN_SAFE32=${VPN_SAFE32})"
+        log_msg "INFO" "$CYAN" "Se priorizarán fallbacks y se evitarán algunos paquetes nativos conflictivos."
+    else
+        log_msg "INFO" "$CYAN" "Modo compatibilidad 32-bit: desactivado (VPN_SAFE32=${VPN_SAFE32})"
+    fi
     
     # Python
     if ! command -v python3 &> /dev/null; then
         log_msg "INSTALL" "$AMARILLO" "Instalando Python3..."
-        pkg install python3 -y
+        if ! pkg_install_cmd python3 -y; then
+            log_msg "WARN" "$AMARILLO" "No se pudo instalar Python3 con pkg."
+        fi
     fi
 
     # Paquetes obligatorios (mínimos)
@@ -328,7 +409,7 @@ check_env() {
     if ! python3 -m pip --version >/dev/null 2>&1; then
         log_msg "INSTALL" "$CYAN" "Instalando pip para Python3..."
         if has_cmd pkg; then
-            pkg install python-pip -y || true
+            pkg_install_cmd python-pip -y || true
         fi
     fi
 
@@ -339,9 +420,16 @@ check_env() {
     # Cryptography
     if ! python3 -c "import cryptography" &> /dev/null; then
         log_msg "INSTALL" "$CYAN" "Instalando librería 'cryptography'..."
-        if ! pkg install python-cryptography -y; then
+        if safe32_mode_enabled; then
+             log_msg "INFO" "$CYAN" "SAFE32: omitiendo paquete nativo python-cryptography; intentando pip."
+             if ! pip_install_py cryptography; then
+                 log_msg "WARN" "$AMARILLO" "SAFE32: cryptography por pip falló. Intentando toolchain y reintento..."
+                 pkg_install_cmd build-essential openssl libffi rust binutils -y || true
+                 pip_install_py cryptography || true
+             fi
+        elif ! pkg_install_cmd python-cryptography -y; then
              log_msg "WARN" "$AMARILLO" "Fallo nativo. Intentando compilación..."
-             pkg install build-essential openssl libffi rust binutils -y
+             pkg_install_cmd build-essential openssl libffi rust binutils -y || true
              pip_install_py cryptography
         fi
     fi
@@ -349,7 +437,10 @@ check_env() {
     # cffi backend (necesario para cryptography en varios runtimes)
     if ! python3 -c "import cffi, _cffi_backend" &> /dev/null; then
         log_msg "INSTALL" "$CYAN" "Instalando backend cffi..."
-        if ! pkg install python-cffi -y; then
+        if safe32_mode_enabled; then
+            log_msg "INFO" "$CYAN" "SAFE32: omitiendo paquete nativo python-cffi; intentando pip."
+            pip_install_py cffi || true
+        elif ! pkg_install_cmd python-cffi -y; then
             log_msg "WARN" "$AMARILLO" "Fallo nativo cffi. Intentando pip..."
             pip_install_py cffi
         fi
@@ -389,7 +480,12 @@ check_env() {
     if ! python3 -c "import Crypto" &> /dev/null; then
         log_msg "INSTALL" "$CYAN" "Instalando 'pycryptodome' (namespace Crypto)..."
         if has_cmd pkg; then
-            pkg install python-pycryptodome -y >/dev/null 2>&1 || pip_install_py pycryptodome
+            if safe32_mode_enabled; then
+                log_msg "INFO" "$CYAN" "SAFE32: omitiendo paquete nativo python-pycryptodome; intentando pip."
+                pip_install_py pycryptodome || true
+            else
+                pkg_install_cmd python-pycryptodome -y || pip_install_py pycryptodome
+            fi
         else
             pip_install_py pycryptodome
         fi
