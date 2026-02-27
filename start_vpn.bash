@@ -731,7 +731,7 @@ launch_vpn() {
 STOP_REQUESTED=0
 RESTART_DELAY_SECONDS="${RESTART_DELAY_SECONDS:-2}"
 SUPERVISOR_PID_FILE=""
-CORE_REGEN_ON_EXIT_DONE=0
+CORE_CLEANUP_ON_EXIT_DONE=0
 
 init_supervisor_pid_file() {
     local base_dir=""
@@ -760,13 +760,15 @@ cleanup_supervisor_pid_file() {
     fi
 }
 
-regen_core_on_exit_once() {
-    if [ "$CORE_REGEN_ON_EXIT_DONE" = "1" ]; then
+remove_core_on_exit_once() {
+    if [ "$CORE_CLEANUP_ON_EXIT_DONE" = "1" ]; then
         return 0
     fi
-    CORE_REGEN_ON_EXIT_DONE=1
-    log_msg "GEN" "$AMARILLO" "Regenerando $SCRIPT_TARGET al cerrar la VPN..."
-    force_regenerate_payload
+    CORE_CLEANUP_ON_EXIT_DONE=1
+    if [ -f "$SCRIPT_TARGET" ]; then
+        log_msg "GEN" "$AMARILLO" "Eliminando $SCRIPT_TARGET al cerrar la VPN..."
+        rm -f "$SCRIPT_TARGET" 2>/dev/null || true
+    fi
 }
 
 stop_previous_supervisor() {
@@ -815,13 +817,13 @@ handle_shutdown() {
     if [ -n "${VPN_PID:-}" ]; then
         kill "$VPN_PID" 2>/dev/null || true
     fi
-    regen_core_on_exit_once
+    remove_core_on_exit_once
     cleanup_supervisor_pid_file
 }
 
 handle_exit() {
     cleanup_supervisor_pid_file
-    regen_core_on_exit_once
+    remove_core_on_exit_once
 }
 
 supervise_vpn() {
