@@ -8,10 +8,6 @@ ZIP_FILE="${ZIP_FILE:-$SCRIPT_DIR/vpn-shadow.zip}"
 VPN_DIR="${VPN_DIR:-$SCRIPT_DIR/vpn-shadow}"
 MAIN_FILE="${MAIN_FILE:-$VPN_DIR/main.py}"
 
-ZIP_REFRESH_ALWAYS="${ZIP_REFRESH_ALWAYS:-1}"
-FORCE_CORE_REGEN="${FORCE_CORE_REGEN:-0}"
-DELETE_ZIP_AFTER_EXTRACT="${DELETE_ZIP_AFTER_EXTRACT:-1}"
-DELETE_VPN_DIR_ON_EXIT="${DELETE_VPN_DIR_ON_EXIT:-1}"
 KILL_OCCUPIED_PORT="${KILL_OCCUPIED_PORT:-1}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
@@ -23,7 +19,6 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 VPN_PID=""
-CLEANUP_DONE=0
 
 log() {
   local level="$1"
@@ -118,38 +113,9 @@ PY
   log "OK" "$GREEN" "ZIP descomprimido en: $VPN_DIR"
 }
 
-is_safe_delete_path() {
-  local target="$1"
-  [[ -n "$target" ]] || return 1
-  [[ "$target" != "/" && "$target" != "." && "$target" != ".." ]] || return 1
-  [[ "$target" == "$SCRIPT_DIR/"* ]] || return 1
-  return 0
-}
-
-cleanup_artifacts() {
-  if [[ "$CLEANUP_DONE" == "1" ]]; then
-    return 0
-  fi
-  CLEANUP_DONE=1
-
-  if [[ "$DELETE_ZIP_AFTER_EXTRACT" == "1" && -f "$ZIP_FILE" ]]; then
-    rm -f "$ZIP_FILE" || true
-    log "SYNC" "$CYAN" "ZIP temporal eliminado: $ZIP_FILE"
-  fi
-
-  if [[ "$DELETE_VPN_DIR_ON_EXIT" == "1" && -d "$VPN_DIR" ]]; then
-    if is_safe_delete_path "$VPN_DIR"; then
-      rm -rf "$VPN_DIR" || true
-      log "SYNC" "$CYAN" "Carpeta temporal eliminada: $VPN_DIR"
-    else
-      log "WARN" "$YELLOW" "Ruta no segura, se omite borrado de carpeta: $VPN_DIR"
-    fi
-  fi
-}
-
 handle_signal() {
   local sig="$1"
-  log "WARN" "$YELLOW" "Señal $sig recibida. Deteniendo VPN y limpiando archivos temporales..."
+  log "WARN" "$YELLOW" "Señal $sig recibida. Deteniendo VPN..."
 
   if [[ -n "$VPN_PID" ]] && kill -0 "$VPN_PID" >/dev/null 2>&1; then
     kill "-$sig" "$VPN_PID" >/dev/null 2>&1 || kill "$VPN_PID" >/dev/null 2>&1 || true
@@ -168,7 +134,6 @@ setup_signal_traps() {
   trap 'handle_signal INT' INT
   trap 'handle_signal QUIT' QUIT
   trap 'handle_signal TERM' TERM
-  trap 'cleanup_artifacts' EXIT
 }
 
 ensure_deps() {
@@ -373,6 +338,17 @@ kill_processes_on_port() {
   sleep 1
 }
 
+has_local_install() {
+  [[ -f "$MAIN_FILE" ]]
+}
+
+install_from_termux() {
+  local py="$1"
+  download_zip
+  extract_zip "$py"
+  log "OK" "$GREEN" "Instalación local actualizada en: $VPN_DIR"
+}
+
 launch_vpn() {
   local py="$1"
   shift || true
@@ -408,6 +384,46 @@ launch_vpn() {
   return "$status"
 }
 
+show_menu() {
+  echo
+  echo "===== Shadow VPN ====="
+  echo "1) Instalar desde Termux (descargar ZIP)"
+  echo "2) Ejecutar desde local"
+  echo "3) Salir"
+}
+
+menu_loop() {
+  local py="$1"
+  while true; do
+    show_menu
+    read -r -p "Selecciona una opción [1-3]: " option
+    case "$option" in
+      1)
+        install_from_termux "$py"
+        ;;
+      2)
+        if ! has_local_install; then
+          log "ERROR" "$RED" "No existe instalación local. Usa la opción 1 primero."
+          continue
+        fi
+        ensure_deps "$py"
+        local app_status=0
+        launch_vpn "$py" || app_status="$?"
+        if [[ "$app_status" -ne 0 ]]; then
+          log "WARN" "$YELLOW" "La VPN finalizó con código: $app_status"
+        fi
+        ;;
+      3)
+        log "INFO" "$CYAN" "Saliendo."
+        return 0
+        ;;
+      *)
+        log "WARN" "$YELLOW" "Opción inválida. Elige 1, 2 o 3."
+        ;;
+    esac
+  done
+}
+
 main() {
   local py
   setup_signal_traps
@@ -417,24 +433,30 @@ main() {
     exit 1
   fi
 
-  local need_refresh=0
-  if [[ "$ZIP_REFRESH_ALWAYS" == "1" || "$FORCE_CORE_REGEN" == "1" ]]; then
-    need_refresh=1
-  elif [[ ! -f "$ZIP_FILE" || ! -f "$MAIN_FILE" ]]; then
-    need_refresh=1
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      --install)
+        install_from_termux "$py"
+        return 0
+        ;;
+      --local)
+        shift || true
+        ;;
+    esac
+
+    if ! has_local_install; then
+      log "ERROR" "$RED" "No existe instalación local en: $VPN_DIR"
+      log "INFO" "$CYAN" "Ejecuta sin argumentos y usa la opción 1 para instalar."
+      return 1
+    fi
+
+    ensure_deps "$py"
+    local app_status=0
+    launch_vpn "$py" "$@" || app_status="$?"
+    return "$app_status"
   fi
 
-  if [[ "$need_refresh" == "1" ]]; then
-    download_zip
-    extract_zip "$py"
-  else
-    log "SYNC" "$CYAN" "Usando instalación local existente: $VPN_DIR"
-  fi
-
-  ensure_deps "$py"
-  local app_status=0
-  launch_vpn "$py" "$@" || app_status="$?"
-  return "$app_status"
+  menu_loop "$py"
 }
 
 main "$@"
