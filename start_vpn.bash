@@ -49,6 +49,7 @@ resolve_python() {
 }
 
 download_zip() {
+  local require_remote="${1:-0}"
   local tmp_zip="${ZIP_FILE}.download.$$"
   local ok=0
   log "SYNC" "$CYAN" "Descargando ZIP de la VPN..."
@@ -68,14 +69,20 @@ download_zip() {
     return 0
   fi
 
+  if [[ -s "$tmp_zip" ]]; then
+    rm -f "$tmp_zip" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$require_remote" == "1" ]]; then
+    log "ERROR" "$RED" "No se pudo descargar $ZIP_URL (modo instalación limpia)."
+    return 1
+  fi
+
   if [[ -s "$ZIP_FILE" ]]; then
     log "WARN" "$YELLOW" "No se pudo descargar $ZIP_URL. Se usará ZIP local existente: $ZIP_FILE"
     return 0
   fi
 
-  if [[ -s "$tmp_zip" ]]; then
-    rm -f "$tmp_zip" >/dev/null 2>&1 || true
-  fi
   if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     log "ERROR" "$RED" "No hay curl ni wget para descargar $ZIP_URL"
   else
@@ -214,6 +221,11 @@ PY
 install_system_dependencies() {
   if ! command -v pkg >/dev/null 2>&1; then
     log "WARN" "$YELLOW" "No se detectó pkg (Termux). Se omite instalación de paquetes del sistema."
+    return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1 && (command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1); then
+    log "SETUP" "$CYAN" "Dependencias base del sistema ya instaladas. Omitiendo pkg install."
     return 0
   fi
 
@@ -409,13 +421,31 @@ has_local_install() {
   [[ -f "$MAIN_FILE" ]]
 }
 
+clean_install_target() {
+  log "SYNC" "$CYAN" "Limpiando instalación local previa..."
+  if [[ -d "$VPN_DIR" ]]; then
+    rm -rf "$VPN_DIR"
+    log "OK" "$GREEN" "Carpeta eliminada: $VPN_DIR"
+  else
+    log "INFO" "$CYAN" "Carpeta no existe, se omite: $VPN_DIR"
+  fi
+
+  if [[ -f "$ZIP_FILE" ]]; then
+    rm -f "$ZIP_FILE"
+    log "OK" "$GREEN" "ZIP eliminado: $ZIP_FILE"
+  else
+    log "INFO" "$CYAN" "ZIP no existe, se omite: $ZIP_FILE"
+  fi
+}
+
 install_from_termux() {
   local py="$1"
   shift || true
   install_system_dependencies
   setup_storage_permission
   py="$(resolve_python)"
-  download_zip
+  clean_install_target
+  download_zip 1
   extract_zip "$py"
   ensure_deps "$py"
   log "OK" "$GREEN" "Instalación local actualizada en: $VPN_DIR"
