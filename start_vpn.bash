@@ -11,6 +11,11 @@ MAIN_FILE="${MAIN_FILE:-$VPN_DIR/main.py}"
 KILL_OCCUPIED_PORT="${KILL_OCCUPIED_PORT:-1}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
+IP_RANGE_MIN="${IP_RANGE_MIN:-20}"
+IP_RANGE_MAX="${IP_RANGE_MAX:-90}"
+IP_RANGE_CHECK="${IP_RANGE_CHECK:-1}"
+IP_RANGE_ENFORCE="${IP_RANGE_ENFORCE:-0}"
+VPN_MENU_ANIM="${VPN_MENU_ANIM:-1}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,6 +31,130 @@ log() {
   local color="$2"
   local msg="$3"
   echo -e "${color}[${level}] ${msg}${NC}"
+}
+
+is_tty_stdout() {
+  [[ -t 1 ]]
+}
+
+can_animate() {
+  [[ "$VPN_MENU_ANIM" == "1" ]] && is_tty_stdout
+}
+
+animate_boot_line() {
+  local msg="${1:-Inicializando}"
+  local rounds="${2:-10}"
+  local i frame
+  can_animate || return 0
+  for ((i=0; i<rounds; i++)); do
+    case $((i % 4)) in
+      0) frame='|' ;;
+      1) frame='/' ;;
+      2) frame='-' ;;
+      3) frame='\\' ;;
+    esac
+    printf "\r${CYAN}[BOOT] %s %s${NC}" "$msg" "$frame"
+    sleep 0.08
+  done
+  printf "\r\033[K"
+}
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+get_iface_ip() {
+  local iface="$1"
+  local ip_addr=""
+  if has_cmd ip; then
+    ip_addr="$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+  fi
+  if [[ -z "$ip_addr" ]] && has_cmd ifconfig; then
+    ip_addr="$(ifconfig "$iface" 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]{1,3}\.){3}[0-9]{1,3}' | awk '{print $2}' | sed 's/^addr://g' | head -n1)"
+  fi
+  printf '%s\n' "$ip_addr"
+}
+
+get_all_local_ips() {
+  {
+    if has_cmd ip; then
+      ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+    fi
+    if has_cmd ifconfig; then
+      ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]{1,3}\.){3}[0-9]{1,3}' | awk '{print $2}' | sed 's/^addr://g'
+    fi
+  } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -Ev '^127\.|^0\.0\.0\.0$' | sort -u
+}
+
+ip_in_recommended_mobile_range() {
+  local ip_addr="$1"
+  local o1 o2 _o3 _o4
+  IFS='.' read -r o1 o2 _o3 _o4 <<< "$ip_addr"
+  [[ "$o1" == "10" ]] || return 1
+  [[ "$o2" =~ ^[0-9]+$ ]] || return 1
+  [[ "$o2" -ge "$IP_RANGE_MIN" && "$o2" -le "$IP_RANGE_MAX" ]]
+}
+
+network_mode_label() {
+  local rmnet_ip wifi_ip any_ip
+  rmnet_ip="$(get_iface_ip rmnet0)"
+  wifi_ip="$(get_iface_ip wlan0)"
+  any_ip="$(get_all_local_ips | head -n1 || true)"
+  if [[ -n "$rmnet_ip" ]]; then
+    printf 'Datos moviles (rmnet0: %s)\n' "$rmnet_ip"
+    return
+  fi
+  if [[ -n "$wifi_ip" ]]; then
+    printf 'WiFi (wlan0: %s)\n' "$wifi_ip"
+    return
+  fi
+  if [[ -n "$any_ip" ]]; then
+    printf 'LAN/mixta (%s)\n' "$any_ip"
+    return
+  fi
+  printf 'Sin red local detectada\n'
+}
+
+check_mobile_ip_range() {
+  [[ "$IP_RANGE_CHECK" == "1" ]] || return 0
+  local rmnet_ip
+  rmnet_ip="$(get_iface_ip rmnet0)"
+  if [[ -z "$rmnet_ip" ]]; then
+    return 0
+  fi
+  if ip_in_recommended_mobile_range "$rmnet_ip"; then
+    log "OK" "$GREEN" "IP móvil en rango sugerido: $rmnet_ip (10.$IP_RANGE_MIN-10.$IP_RANGE_MAX)"
+    return 0
+  fi
+
+  log "WARN" "$YELLOW" "IP móvil fuera de rango sugerido: $rmnet_ip (esperado 10.$IP_RANGE_MIN-10.$IP_RANGE_MAX)"
+  log "INFO" "$CYAN" "Sugerencia: activar modo avión 10-15s, desactivar y reintentar."
+  if [[ "$IP_RANGE_ENFORCE" == "1" ]]; then
+    local confirm=""
+    read -r -p ">> Forzar ejecución con IP fuera de rango? (s/N): " confirm
+    if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+      return 1
+    fi
+    log "WARN" "$YELLOW" "Modo forzado activado por usuario."
+  fi
+  return 0
+}
+
+print_access_points() {
+  local launch_host="$1"
+  local launch_port="$2"
+  log "INFO" "$CYAN" "Red activa: $(network_mode_label)"
+  log "INFO" "$CYAN" "Panel: http://$launch_host:$launch_port/panel"
+  log "INFO" "$CYAN" "Descargas: http://$launch_host:$launch_port/download"
+
+  if [[ "$launch_host" == "127.0.0.1" || "$launch_host" == "localhost" || "$launch_host" == "::1" ]]; then
+    local ip_addr
+    while IFS= read -r ip_addr; do
+      [[ -n "$ip_addr" ]] || continue
+      log "INFO" "$CYAN" "Panel LAN: http://$ip_addr:$launch_port/panel"
+      log "INFO" "$CYAN" "Descargas LAN: http://$ip_addr:$launch_port/download"
+    done < <(get_all_local_ips)
+  fi
 }
 
 resolve_python() {
@@ -465,13 +594,16 @@ launch_vpn() {
   local launch_host launch_port
   launch_host="$(resolve_launch_host "$@")"
   launch_port="$(resolve_launch_port "$@")"
+  if ! check_mobile_ip_range; then
+    log "WARN" "$YELLOW" "Ejecución cancelada por validación de IP."
+    return 1
+  fi
   if ! has_help_flag "$@"; then
     kill_processes_on_port "$py" "$launch_port"
   fi
 
   log "LAUNCH" "$GREEN" "Iniciando Shadow VPN desde: $MAIN_FILE"
-  log "INFO" "$CYAN" "Panel: http://$launch_host:$launch_port/panel"
-  log "INFO" "$CYAN" "Descargas: http://$launch_host:$launch_port/download"
+  print_access_points "$launch_host" "$launch_port"
 
   local status=0
   if [[ $# -eq 0 ]]; then
@@ -489,13 +621,23 @@ launch_vpn() {
 }
 
 show_menu() {
+  animate_boot_line "Cargando interfaz de control" 8
   echo
-  echo "==================== SHADOW VPN ===================="
+  echo -e "${CYAN}============================================================${NC}"
+  echo -e "${CYAN}   _____ _   _    _    ____   _____        __ __      ______${NC}"
+  echo -e "${CYAN}  / ____| | | |  / \\  |  _ \\ / _ \\ \\      / / \\ \\    / /  _ \\${NC}"
+  echo -e "${CYAN} | (___ | |_| | / _ \\ | | | | | | \\ \\ /\\ / /   \\ \\  / /| |_) |${NC}"
+  echo -e "${CYAN}  \\___ \\|  _  |/ ___ \\| |_| | |_| |\\ V  V /     \\ \\/ / |  __/${NC}"
+  echo -e "${CYAN}  ____) | | | /_/   \\_\\____/ \\___/  \\_/\\_/       \\__/  |_|${NC}"
+  echo -e "${CYAN}============================================================${NC}"
+  echo -e "${GREEN} Control Center${NC}   | Host: ${HOST}   Port: ${PORT}"
+  echo -e "${GREEN} Red detectada:${NC} $(network_mode_label)"
+  echo "------------------------------------------------------------"
   echo "1) Instalar desde Termux (descarga ZIP e inicia VPN)"
   echo "2) Ejecutar desde local (sin descargar)"
   echo "3) Reparar librerías de Termux (repo + update/upgrade)"
   echo "0) Salir"
-  echo "===================================================="
+  echo "------------------------------------------------------------"
 }
 
 menu_loop() {
