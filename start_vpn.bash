@@ -19,6 +19,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 VPN_PID=""
+SIGNAL_HANDLED=0
 
 log() {
   local level="$1"
@@ -115,10 +116,28 @@ PY
 
 handle_signal() {
   local sig="$1"
+  if [[ "$SIGNAL_HANDLED" == "1" ]]; then
+    case "$sig" in
+      INT) exit 130 ;;
+      QUIT) exit 131 ;;
+      TERM) exit 143 ;;
+      *) exit 1 ;;
+    esac
+  fi
+  SIGNAL_HANDLED=1
   log "WARN" "$YELLOW" "Señal $sig recibida. Deteniendo VPN..."
 
   if [[ -n "$VPN_PID" ]] && kill -0 "$VPN_PID" >/dev/null 2>&1; then
-    kill "-$sig" "$VPN_PID" >/dev/null 2>&1 || kill "$VPN_PID" >/dev/null 2>&1 || true
+    kill -TERM "$VPN_PID" >/dev/null 2>&1 || true
+    for _ in 1 2 3; do
+      if ! kill -0 "$VPN_PID" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.4
+    done
+    if kill -0 "$VPN_PID" >/dev/null 2>&1; then
+      kill -KILL "$VPN_PID" >/dev/null 2>&1 || true
+    fi
     wait "$VPN_PID" >/dev/null 2>&1 || true
   fi
 
@@ -190,6 +209,54 @@ PY
   else
     log "WARN" "$YELLOW" "pip no disponible en $py. Instala manualmente: $missing_pkgs"
   fi
+}
+
+install_system_dependencies() {
+  if ! command -v pkg >/dev/null 2>&1; then
+    log "WARN" "$YELLOW" "No se detectó pkg (Termux). Se omite instalación de paquetes del sistema."
+    return 0
+  fi
+
+  if [[ "${TERMUX_REFRESH_REPOS:-0}" == "1" ]]; then
+    log "SETUP" "$CYAN" "Actualizando repositorios de Termux..."
+    pkg update -y || true
+  fi
+
+  log "SETUP" "$CYAN" "Instalando dependencias del sistema..."
+  pkg install -y python python-pip curl unzip python-cryptography lsof procps || true
+}
+
+setup_storage_permission() {
+  if [[ "${TERMUX_SETUP_STORAGE:-0}" != "1" ]]; then
+    return 0
+  fi
+  if command -v termux-setup-storage >/dev/null 2>&1; then
+    log "SETUP" "$CYAN" "Solicitando permisos de almacenamiento..."
+    termux-setup-storage || true
+    echo "Acepta el permiso en Android y presiona ENTER para continuar."
+    read -r
+  fi
+}
+
+repair_termux_repos_and_libs() {
+  if ! command -v apt >/dev/null 2>&1; then
+    log "WARN" "$YELLOW" "apt no disponible en este entorno."
+    return 0
+  fi
+
+  if command -v termux-change-repo >/dev/null 2>&1; then
+    log "SETUP" "$CYAN" "Abriendo termux-change-repo (elige mirror y confirma)..."
+    termux-change-repo || true
+  else
+    log "WARN" "$YELLOW" "termux-change-repo no está disponible."
+  fi
+
+  log "SETUP" "$CYAN" "Ejecutando apt update..."
+  apt update || true
+  log "SETUP" "$CYAN" "Ejecutando apt full-upgrade..."
+  apt full-upgrade -y || true
+
+  log "OK" "$GREEN" "Reparación de repositorios/librerías completada."
 }
 
 resolve_launch_port() {
@@ -344,9 +411,16 @@ has_local_install() {
 
 install_from_termux() {
   local py="$1"
+  shift || true
+  install_system_dependencies
+  setup_storage_permission
+  py="$(resolve_python)"
   download_zip
   extract_zip "$py"
+  ensure_deps "$py"
   log "OK" "$GREEN" "Instalación local actualizada en: $VPN_DIR"
+  log "LAUNCH" "$GREEN" "Iniciando VPN tras instalación..."
+  launch_vpn "$py" "$@"
 }
 
 launch_vpn() {
@@ -386,20 +460,26 @@ launch_vpn() {
 
 show_menu() {
   echo
-  echo "===== Shadow VPN ====="
-  echo "1) Instalar desde Termux (descargar ZIP)"
-  echo "2) Ejecutar desde local"
-  echo "3) Salir"
+  echo "==================== SHADOW VPN ===================="
+  echo "1) Instalar desde Termux (descarga ZIP e inicia VPN)"
+  echo "2) Ejecutar desde local (sin descargar)"
+  echo "3) Reparar librerías de Termux (repo + update/upgrade)"
+  echo "0) Salir"
+  echo "===================================================="
 }
 
 menu_loop() {
   local py="$1"
   while true; do
     show_menu
-    read -r -p "Selecciona una opción [1-3]: " option
+    read -r -p "Selecciona una opción [1-3,0]: " option
     case "$option" in
       1)
-        install_from_termux "$py"
+        local app_status=0
+        install_from_termux "$py" || app_status="$?"
+        if [[ "$app_status" -ne 0 ]]; then
+          log "WARN" "$YELLOW" "La VPN finalizó con código: $app_status"
+        fi
         ;;
       2)
         if ! has_local_install; then
@@ -414,11 +494,14 @@ menu_loop() {
         fi
         ;;
       3)
+        repair_termux_repos_and_libs
+        ;;
+      0|q|Q|salir|SALIR)
         log "INFO" "$CYAN" "Saliendo."
         return 0
         ;;
       *)
-        log "WARN" "$YELLOW" "Opción inválida. Elige 1, 2 o 3."
+        log "WARN" "$YELLOW" "Opción inválida. Usa 1, 2, 3 o 0."
         ;;
     esac
   done
@@ -436,7 +519,12 @@ main() {
   if [[ $# -gt 0 ]]; then
     case "$1" in
       --install)
-        install_from_termux "$py"
+        shift || true
+        install_from_termux "$py" "$@"
+        return $?
+        ;;
+      --repair)
+        repair_termux_repos_and_libs
         return 0
         ;;
       --local)
