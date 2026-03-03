@@ -10,6 +10,9 @@ MAIN_FILE="${MAIN_FILE:-$VPN_DIR/main.py}"
 
 ZIP_REFRESH_ALWAYS="${ZIP_REFRESH_ALWAYS:-1}"
 FORCE_CORE_REGEN="${FORCE_CORE_REGEN:-0}"
+DELETE_ZIP_AFTER_EXTRACT="${DELETE_ZIP_AFTER_EXTRACT:-1}"
+DELETE_VPN_DIR_ON_EXIT="${DELETE_VPN_DIR_ON_EXIT:-1}"
+KILL_OCCUPIED_PORT="${KILL_OCCUPIED_PORT:-1}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8080}"
 
@@ -18,6 +21,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+
+VPN_PID=""
+CLEANUP_DONE=0
 
 log() {
   local level="$1"
@@ -112,6 +118,59 @@ PY
   log "OK" "$GREEN" "ZIP descomprimido en: $VPN_DIR"
 }
 
+is_safe_delete_path() {
+  local target="$1"
+  [[ -n "$target" ]] || return 1
+  [[ "$target" != "/" && "$target" != "." && "$target" != ".." ]] || return 1
+  [[ "$target" == "$SCRIPT_DIR/"* ]] || return 1
+  return 0
+}
+
+cleanup_artifacts() {
+  if [[ "$CLEANUP_DONE" == "1" ]]; then
+    return 0
+  fi
+  CLEANUP_DONE=1
+
+  if [[ "$DELETE_ZIP_AFTER_EXTRACT" == "1" && -f "$ZIP_FILE" ]]; then
+    rm -f "$ZIP_FILE" || true
+    log "SYNC" "$CYAN" "ZIP temporal eliminado: $ZIP_FILE"
+  fi
+
+  if [[ "$DELETE_VPN_DIR_ON_EXIT" == "1" && -d "$VPN_DIR" ]]; then
+    if is_safe_delete_path "$VPN_DIR"; then
+      rm -rf "$VPN_DIR" || true
+      log "SYNC" "$CYAN" "Carpeta temporal eliminada: $VPN_DIR"
+    else
+      log "WARN" "$YELLOW" "Ruta no segura, se omite borrado de carpeta: $VPN_DIR"
+    fi
+  fi
+}
+
+handle_signal() {
+  local sig="$1"
+  log "WARN" "$YELLOW" "Señal $sig recibida. Deteniendo VPN y limpiando archivos temporales..."
+
+  if [[ -n "$VPN_PID" ]] && kill -0 "$VPN_PID" >/dev/null 2>&1; then
+    kill "-$sig" "$VPN_PID" >/dev/null 2>&1 || kill "$VPN_PID" >/dev/null 2>&1 || true
+    wait "$VPN_PID" >/dev/null 2>&1 || true
+  fi
+
+  case "$sig" in
+    INT) exit 130 ;;
+    QUIT) exit 131 ;;
+    TERM) exit 143 ;;
+    *) exit 1 ;;
+  esac
+}
+
+setup_signal_traps() {
+  trap 'handle_signal INT' INT
+  trap 'handle_signal QUIT' QUIT
+  trap 'handle_signal TERM' TERM
+  trap 'cleanup_artifacts' EXIT
+}
+
 ensure_deps() {
   local py="$1"
   local missing_pkgs
@@ -168,6 +227,152 @@ PY
   fi
 }
 
+resolve_launch_port() {
+  local launch_port="$PORT"
+  local prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--port" && -n "$arg" ]]; then
+      launch_port="$arg"
+      break
+    fi
+    case "$arg" in
+      --port=*)
+        launch_port="${arg#--port=}"
+        break
+        ;;
+    esac
+    prev="$arg"
+  done
+  printf '%s\n' "$launch_port"
+}
+
+resolve_launch_host() {
+  local launch_host="$HOST"
+  local prev=""
+  for arg in "$@"; do
+    if [[ "$prev" == "--host" && -n "$arg" ]]; then
+      launch_host="$arg"
+      break
+    fi
+    case "$arg" in
+      --host=*)
+        launch_host="${arg#--host=}"
+        break
+        ;;
+    esac
+    prev="$arg"
+  done
+  printf '%s\n' "$launch_host"
+}
+
+has_help_flag() {
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_pids_on_port() {
+  local port="$1"
+  local pids=""
+
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' | xargs echo 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$pids" ]] && command -v fuser >/dev/null 2>&1; then
+    pids="$(fuser -n tcp "$port" 2>/dev/null | tr '\n' ' ' | xargs echo 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$pids" ]] && command -v ss >/dev/null 2>&1; then
+    pids="$(ss -ltnp "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u | tr '\n' ' ' | xargs echo 2>/dev/null || true)"
+  fi
+
+  printf '%s\n' "$pids"
+}
+
+port_is_busy() {
+  local py="$1"
+  local port="$2"
+  "$py" - "$port" << 'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(("0.0.0.0", port))
+except OSError:
+    raise SystemExit(0)
+finally:
+    s.close()
+raise SystemExit(1)
+PY
+}
+
+find_fallback_pids_for_port() {
+  local port="$1"
+  local pids=""
+  if command -v pgrep >/dev/null 2>&1; then
+    pids+=" $(pgrep -f '/vpn-shadow/main.py' 2>/dev/null || true)"
+    pids+=" $(pgrep -f 'shadow_vpn.py' 2>/dev/null || true)"
+    pids+=" $(pgrep -f "python.*--port[= ]$port" 2>/dev/null || true)"
+    pids+=" $(pgrep -f "http.server $port" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$pids"
+}
+
+is_protected_pid() {
+  local target="$1"
+  [[ "$target" =~ ^[0-9]+$ ]] || return 1
+
+  local cur="$$"
+  while [[ -n "$cur" && "$cur" =~ ^[0-9]+$ ]]; do
+    if [[ "$target" == "$cur" ]]; then
+      return 0
+    fi
+    cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ -z "$cur" || "$cur" == "0" || "$cur" == "1" ]]; then
+      break
+    fi
+  done
+  return 1
+}
+
+kill_processes_on_port() {
+  local py="$1"
+  local port="$2"
+  [[ "$KILL_OCCUPIED_PORT" == "1" ]] || return 0
+
+  local pids fallback_pids
+  pids="$(find_pids_on_port "$port")"
+
+  if [[ -z "$pids" ]] && port_is_busy "$py" "$port"; then
+    fallback_pids="$(find_fallback_pids_for_port "$port")"
+    pids="$fallback_pids"
+  fi
+
+  if [[ -z "$pids" ]]; then
+    if port_is_busy "$py" "$port"; then
+      log "WARN" "$YELLOW" "Puerto $port ocupado, pero no se pudo resolver PID automáticamente."
+    fi
+    return 0
+  fi
+
+  log "WARN" "$YELLOW" "Puerto $port ocupado. Matando PID(s): $pids"
+  local pid
+  for pid in $pids; do
+    if [[ "$pid" =~ ^[0-9]+$ ]] && ! is_protected_pid "$pid"; then
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+  sleep 1
+}
+
 launch_vpn() {
   local py="$1"
   shift || true
@@ -177,19 +382,35 @@ launch_vpn() {
     return 1
   fi
 
-  log "LAUNCH" "$GREEN" "Iniciando Shadow VPN desde: $MAIN_FILE"
-  log "INFO" "$CYAN" "Panel: http://$HOST:$PORT/panel"
-  log "INFO" "$CYAN" "Descargas: http://$HOST:$PORT/download"
-
-  if [[ $# -eq 0 ]]; then
-    exec "$py" "$MAIN_FILE" --host "$HOST" --port "$PORT"
-  else
-    exec "$py" "$MAIN_FILE" "$@"
+  local launch_host launch_port
+  launch_host="$(resolve_launch_host "$@")"
+  launch_port="$(resolve_launch_port "$@")"
+  if ! has_help_flag "$@"; then
+    kill_processes_on_port "$py" "$launch_port"
   fi
+
+  log "LAUNCH" "$GREEN" "Iniciando Shadow VPN desde: $MAIN_FILE"
+  log "INFO" "$CYAN" "Panel: http://$launch_host:$launch_port/panel"
+  log "INFO" "$CYAN" "Descargas: http://$launch_host:$launch_port/download"
+
+  local status=0
+  if [[ $# -eq 0 ]]; then
+    "$py" "$MAIN_FILE" --host "$HOST" --port "$PORT" &
+  else
+    "$py" "$MAIN_FILE" "$@" &
+  fi
+
+  VPN_PID="$!"
+  if ! wait "$VPN_PID"; then
+    status="$?"
+  fi
+  VPN_PID=""
+  return "$status"
 }
 
 main() {
   local py
+  setup_signal_traps
   py="$(resolve_python)"
   if [[ -z "$py" ]]; then
     log "ERROR" "$RED" "python3 no disponible"
@@ -211,7 +432,9 @@ main() {
   fi
 
   ensure_deps "$py"
-  launch_vpn "$py" "$@"
+  local app_status=0
+  launch_vpn "$py" "$@" || app_status="$?"
+  return "$app_status"
 }
 
 main "$@"
