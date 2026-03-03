@@ -14,13 +14,18 @@ PORT="${PORT:-8080}"
 IP_RANGE_MIN="${IP_RANGE_MIN:-20}"
 IP_RANGE_MAX="${IP_RANGE_MAX:-90}"
 IP_RANGE_CHECK="${IP_RANGE_CHECK:-1}"
-IP_RANGE_ENFORCE="${IP_RANGE_ENFORCE:-0}"
+IP_RANGE_ENFORCE="${IP_RANGE_ENFORCE:-1}"
 VPN_MENU_ANIM="${VPN_MENU_ANIM:-1}"
+MATRIX_ANIM_LINES="${MATRIX_ANIM_LINES:-7}"
+MATRIX_ANIM_WIDTH="${MATRIX_ANIM_WIDTH:-58}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+MATRIX='\033[1;32m'
+DIM='\033[2m'
 NC='\033[0m'
 
 VPN_PID=""
@@ -55,6 +60,47 @@ animate_boot_line() {
     esac
     printf "\r${CYAN}[BOOT] %s %s${NC}" "$msg" "$frame"
     sleep 0.08
+  done
+  printf "\r\033[K"
+}
+
+matrix_noise_line() {
+  local width="${1:-58}"
+  local chars='01#@[]{}<>|/$%&*+-=ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  local line=""
+  local i idx
+  for ((i=0; i<width; i++)); do
+    idx=$((RANDOM % ${#chars}))
+    line+="${chars:idx:1}"
+  done
+  printf '%b\n' "${MATRIX}${line}${NC}"
+}
+
+matrix_burst() {
+  local lines="${1:-5}"
+  local width="${2:-58}"
+  local i
+  can_animate || return 0
+  for ((i=0; i<lines; i++)); do
+    matrix_noise_line "$width"
+    sleep 0.025
+  done
+}
+
+animate_warning_spinner() {
+  local msg="${1:-Validando red}"
+  local rounds="${2:-14}"
+  local i frame
+  can_animate || return 0
+  for ((i=0; i<rounds; i++)); do
+    case $((i % 4)) in
+      0) frame='[■□□]' ;;
+      1) frame='[■■□]' ;;
+      2) frame='[■■■]' ;;
+      3) frame='[□■■]' ;;
+    esac
+    printf "\r${YELLOW}[WARN] %s %s${NC}" "$msg" "$frame"
+    sleep 0.07
   done
   printf "\r\033[K"
 }
@@ -123,19 +169,33 @@ check_mobile_ip_range() {
     return 0
   fi
   if ip_in_recommended_mobile_range "$rmnet_ip"; then
-    log "OK" "$GREEN" "IP móvil en rango sugerido: $rmnet_ip (10.$IP_RANGE_MIN-10.$IP_RANGE_MAX)"
+    log "OK" "$GREEN" "IP móvil dentro del rango recomendado: $rmnet_ip (10.$IP_RANGE_MIN-10.$IP_RANGE_MAX)"
     return 0
   fi
 
-  log "WARN" "$YELLOW" "IP móvil fuera de rango sugerido: $rmnet_ip (esperado 10.$IP_RANGE_MIN-10.$IP_RANGE_MAX)"
-  log "INFO" "$CYAN" "Sugerencia: activar modo avión 10-15s, desactivar y reintentar."
+  animate_warning_spinner "Analizando impacto de red" 16
+  can_animate && matrix_burst 4 52
+
+  echo -e "${YELLOW}┌────────────────────────────────────────────────────────────┐${NC}"
+  echo -e "${YELLOW}│${WHITE}              ADVERTENCIA DE RED MÓVIL (RANGO)              ${YELLOW}│${NC}"
+  echo -e "${YELLOW}├────────────────────────────────────────────────────────────┤${NC}"
+  printf "%b\n" "${YELLOW}│${NC} IP detectada en rmnet0: ${WHITE}${rmnet_ip}${NC}"
+  printf "%b\n" "${YELLOW}│${NC} Rango recomendado: ${WHITE}10.${IP_RANGE_MIN} - 10.${IP_RANGE_MAX}${NC}"
+  echo -e "${YELLOW}│${NC} Esta IP está fuera del rango sugerido."
+  echo -e "${YELLOW}│${NC} En algunas redes, esto ${WHITE}podría${NC} incrementar consumo de datos."
+  echo -e "${YELLOW}│${NC} Recomendado: modo avión 10-15s, reconectar y volver a probar."
+  echo -e "${YELLOW}└────────────────────────────────────────────────────────────┘${NC}"
+
   if [[ "$IP_RANGE_ENFORCE" == "1" ]]; then
     local confirm=""
-    read -r -p ">> Forzar ejecución con IP fuera de rango? (s/N): " confirm
+    read -r -p ">> ¿Forzar ejecución de todas formas? (s/N): " confirm
     if [[ "$confirm" != "s" && "$confirm" != "S" ]]; then
+      log "INFO" "$CYAN" "Ejecución cancelada por política de rango."
       return 1
     fi
-    log "WARN" "$YELLOW" "Modo forzado activado por usuario."
+    log "WARN" "$YELLOW" "Ejecución forzada por usuario con IP fuera de rango recomendado."
+  else
+    log "WARN" "$YELLOW" "IP fuera de rango detectada; continuidad automática habilitada (IP_RANGE_ENFORCE=0)."
   fi
   return 0
 }
@@ -621,23 +681,24 @@ launch_vpn() {
 }
 
 show_menu() {
-  animate_boot_line "Cargando interfaz de control" 8
-  echo
-  echo -e "${CYAN}============================================================${NC}"
-  echo -e "${CYAN}   _____ _   _    _    ____   _____        __ __      ______${NC}"
-  echo -e "${CYAN}  / ____| | | |  / \\  |  _ \\ / _ \\ \\      / / \\ \\    / /  _ \\${NC}"
-  echo -e "${CYAN} | (___ | |_| | / _ \\ | | | | | | \\ \\ /\\ / /   \\ \\  / /| |_) |${NC}"
-  echo -e "${CYAN}  \\___ \\|  _  |/ ___ \\| |_| | |_| |\\ V  V /     \\ \\/ / |  __/${NC}"
-  echo -e "${CYAN}  ____) | | | /_/   \\_\\____/ \\___/  \\_/\\_/       \\__/  |_|${NC}"
-  echo -e "${CYAN}============================================================${NC}"
-  echo -e "${GREEN} Control Center${NC}   | Host: ${HOST}   Port: ${PORT}"
-  echo -e "${GREEN} Red detectada:${NC} $(network_mode_label)"
-  echo "------------------------------------------------------------"
+  clear
+  animate_boot_line "Inicializando consola Shadow" 10
+  can_animate && matrix_burst "$MATRIX_ANIM_LINES" "$MATRIX_ANIM_WIDTH"
+  printf '%b\n' "${CYAN}============================================================${NC}"
+  printf '%b\n' "${MATRIX}   _____ _   _    _    ____   _____        __ __      ______${NC}"
+  printf '%b\n' "${MATRIX}  / ____| | | |  / \\  |  _ \\ / _ \\ \\      / / \\ \\    / /  _ \\ ${NC}"
+  printf '%b\n' "${MATRIX} | (___ | |_| | / _ \\ | | | | | | \\ \\ /\\ / /   \\ \\  / /| |_) |${NC}"
+  printf '%b\n' "${MATRIX}  \\___ \\|  _  |/ ___ \\| |_| | |_| |\\ V  V /     \\ \\/ / |  __/${NC}"
+  printf '%b\n' "${MATRIX}  ____) | | | /_/   \\_\\____/ \\___/  \\_/\\_/       \\__/  |_|${NC}"
+  printf '%b\n' "${CYAN}============================================================${NC}"
+  printf '%b\n' "${WHITE} Control Center${NC}   | Host: ${HOST}   Port: ${PORT}"
+  printf '%b\n' "${WHITE} Red detectada:${NC} $(network_mode_label)"
+  printf '%b\n' "${DIM}------------------------------------------------------------${NC}"
   echo "1) Instalar desde Termux (descarga ZIP e inicia VPN)"
   echo "2) Ejecutar desde local (sin descargar)"
   echo "3) Reparar librerías de Termux (repo + update/upgrade)"
   echo "0) Salir"
-  echo "------------------------------------------------------------"
+  printf '%b\n' "${DIM}------------------------------------------------------------${NC}"
 }
 
 menu_loop() {
