@@ -132,6 +132,37 @@ get_all_local_ips() {
   } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -Ev '^127\.|^0\.0\.0\.0$' | sort -u
 }
 
+get_all_local_iface_ips() {
+  if has_cmd ip; then
+    ip -o -4 addr show scope global 2>/dev/null | awk '{
+      gsub(/@.*/, "", $2);
+      split($4, addr, "/");
+      if (addr[1] != "" && addr[1] !~ /^(127\.|0\.0\.0\.0$)/) {
+        print $2, addr[1];
+      }
+    }' | sort -u
+    return 0
+  fi
+
+  local ip_addr
+  while IFS= read -r ip_addr; do
+    [[ -n "$ip_addr" ]] || continue
+    printf 'unknown %s\n' "$ip_addr"
+  done < <(get_all_local_ips)
+}
+
+interface_is_mobile_data() {
+  local iface="${1:-}"
+  iface="${iface,,}"
+  [[ "$iface" == rmnet* || "$iface" == ccmni* || "$iface" == pdp* || "$iface" == wwan* || "$iface" == mobile* ]]
+}
+
+interface_is_wifi() {
+  local iface="${1:-}"
+  iface="${iface,,}"
+  [[ "$iface" == wlan* || "$iface" == wifi* ]]
+}
+
 ip_in_recommended_mobile_range() {
   local ip_addr="$1"
   local o1 o2 _o3 _o4
@@ -141,21 +172,72 @@ ip_in_recommended_mobile_range() {
   [[ "$o2" -ge "$IP_RANGE_MIN" && "$o2" -le "$IP_RANGE_MAX" ]]
 }
 
-network_mode_label() {
-  local rmnet_ip wifi_ip any_ip
-  rmnet_ip="$(get_iface_ip rmnet0)"
-  wifi_ip="$(get_iface_ip wlan0)"
-  any_ip="$(get_all_local_ips | head -n1 || true)"
-  if [[ -n "$rmnet_ip" ]]; then
-    printf 'Datos moviles (rmnet0: %s)\n' "$rmnet_ip"
-    return
+ip_is_private_ten_range() {
+  local ip_addr="$1"
+  [[ "$ip_addr" =~ ^10\.[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+pick_range_checked_ip() {
+  local iface ip_addr
+  local mobile_iface=""
+  local mobile_ip=""
+  local wifi_iface=""
+  local wifi_ip=""
+  local fallback_iface=""
+  local fallback_ip=""
+
+  while read -r iface ip_addr; do
+    [[ -n "$ip_addr" ]] || continue
+    ip_is_private_ten_range "$ip_addr" || continue
+    if interface_is_mobile_data "$iface"; then
+      if [[ -z "$mobile_ip" ]]; then
+        mobile_iface="$iface"
+        mobile_ip="$ip_addr"
+      fi
+      continue
+    fi
+    if interface_is_wifi "$iface"; then
+      if [[ -z "$wifi_ip" ]]; then
+        wifi_iface="$iface"
+        wifi_ip="$ip_addr"
+      fi
+      continue
+    fi
+    if [[ -z "$fallback_ip" ]]; then
+      fallback_iface="$iface"
+      fallback_ip="$ip_addr"
+    fi
+  done < <(get_all_local_iface_ips)
+
+  if [[ -n "$mobile_ip" ]]; then
+    printf '%s %s\n' "$mobile_iface" "$mobile_ip"
+    return 0
   fi
   if [[ -n "$wifi_ip" ]]; then
-    printf 'WiFi (wlan0: %s)\n' "$wifi_ip"
-    return
+    printf '%s %s\n' "$wifi_iface" "$wifi_ip"
+    return 0
   fi
-  if [[ -n "$any_ip" ]]; then
-    printf 'LAN/mixta (%s)\n' "$any_ip"
+  [[ -n "$fallback_ip" ]] || return 1
+  printf '%s %s\n' "${fallback_iface:-unknown}" "$fallback_ip"
+}
+
+network_mode_label() {
+  local iface ip_addr
+  while read -r iface ip_addr; do
+    [[ -n "$ip_addr" ]] || continue
+    if interface_is_mobile_data "$iface"; then
+      printf 'Datos moviles (%s: %s)\n' "$iface" "$ip_addr"
+      return
+    fi
+    if interface_is_wifi "$iface"; then
+      printf 'WiFi (%s: %s)\n' "$iface" "$ip_addr"
+      return
+    fi
+  done < <(get_all_local_iface_ips)
+
+  ip_addr="$(get_all_local_ips | head -n1 || true)"
+  if [[ -n "$ip_addr" ]]; then
+    printf 'LAN/mixta (%s)\n' "$ip_addr"
     return
   fi
   printf 'Sin red local detectada\n'
@@ -163,13 +245,15 @@ network_mode_label() {
 
 check_mobile_ip_range() {
   [[ "$IP_RANGE_CHECK" == "1" ]] || return 0
-  local rmnet_ip
-  rmnet_ip="$(get_iface_ip rmnet0)"
-  if [[ -z "$rmnet_ip" ]]; then
+  local checked_iface checked_ip
+  if ! read -r checked_iface checked_ip < <(pick_range_checked_ip); then
     return 0
   fi
-  if ip_in_recommended_mobile_range "$rmnet_ip"; then
-    log "OK" "$GREEN" "IP móvil dentro del rango recomendado: $rmnet_ip (10.$IP_RANGE_MIN-10.$IP_RANGE_MAX)"
+  if ip_in_recommended_mobile_range "$checked_ip"; then
+    log "OK" "$GREEN" "IP detectada dentro del rango sugerido: $checked_ip (10.$IP_RANGE_MIN-10.$IP_RANGE_MAX)"
+    return 0
+  fi
+  if ! interface_is_mobile_data "$checked_iface"; then
     return 0
   fi
 
@@ -179,10 +263,11 @@ check_mobile_ip_range() {
   echo -e "${YELLOW}┌────────────────────────────────────────────────────────────┐${NC}"
   echo -e "${YELLOW}│${WHITE}              ADVERTENCIA DE RED MÓVIL (RANGO)              ${YELLOW}│${NC}"
   echo -e "${YELLOW}├────────────────────────────────────────────────────────────┤${NC}"
-  printf "%b\n" "${YELLOW}│${NC} IP detectada en rmnet0: ${WHITE}${rmnet_ip}${NC}"
+  printf "%b\n" "${YELLOW}│${NC} IP detectada: ${WHITE}${checked_ip}${NC} ${DIM}(${checked_iface:-red})${NC}"
   printf "%b\n" "${YELLOW}│${NC} Rango recomendado: ${WHITE}10.${IP_RANGE_MIN} - 10.${IP_RANGE_MAX}${NC}"
   echo -e "${YELLOW}│${NC} Esta IP está fuera del rango sugerido."
   echo -e "${YELLOW}│${NC} En algunas redes, esto ${WHITE}podría${NC} incrementar consumo de datos."
+  echo -e "${YELLOW}│${NC} Es una advertencia preventiva, ${WHITE}no${NC} una confirmación."
   echo -e "${YELLOW}│${NC} Recomendado: modo avión 10-15s, reconectar y volver a probar."
   echo -e "${YELLOW}└────────────────────────────────────────────────────────────┘${NC}"
 
@@ -198,6 +283,21 @@ check_mobile_ip_range() {
     log "WARN" "$YELLOW" "IP fuera de rango detectada; continuidad automática habilitada (IP_RANGE_ENFORCE=0)."
   fi
   return 0
+}
+
+print_menu_network_warning_hint() {
+  [[ "$IP_RANGE_CHECK" == "1" ]] || return 0
+  local checked_iface checked_ip
+  if ! read -r checked_iface checked_ip < <(pick_range_checked_ip); then
+    return 0
+  fi
+  if ip_in_recommended_mobile_range "$checked_ip"; then
+    return 0
+  fi
+  if ! interface_is_mobile_data "$checked_iface"; then
+    return 0
+  fi
+  printf '%b\n' "${YELLOW} Advertencia:${NC} ${WHITE}${checked_ip}${NC} ${DIM}(${checked_iface:-red})${NC} fuera de 10.${IP_RANGE_MIN}-10.${IP_RANGE_MAX}; en algunas redes ${WHITE}podría${NC} consumir megas."
 }
 
 print_access_points() {
@@ -693,6 +793,7 @@ show_menu() {
   printf '%b\n' "${CYAN}============================================================${NC}"
   printf '%b\n' "${WHITE} Control Center${NC}   | Host: ${HOST}   Port: ${PORT}"
   printf '%b\n' "${WHITE} Red detectada:${NC} $(network_mode_label)"
+  print_menu_network_warning_hint
   printf '%b\n' "${DIM}------------------------------------------------------------${NC}"
   echo "1) Instalar desde Termux (descarga ZIP e inicia VPN)"
   echo "2) Ejecutar desde local (sin descargar)"
